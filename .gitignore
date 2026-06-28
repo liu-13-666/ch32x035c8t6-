@@ -1,0 +1,12 @@
+# Build outputs
+/obj/
+
+# Editor and OS noise
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
+*~
