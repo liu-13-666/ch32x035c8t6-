@@ -14,6 +14,9 @@
 /.settings/language.settings.xml
 *.launch
 
+# Local project notes
+/*.md
+
 # Editor and OS noise
 .DS_Store
 Thumbs.db
