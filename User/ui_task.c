@@ -3,20 +3,21 @@
  *
  * OLED 显示任务。
  *
+ * 当前两颗 INA219 的位置：
+ * 1. C口输入 -> 降压/充电模块之间：显示为 IN。
+ * 2. 电池 -> 升压模块之间：显示为 D，表示电池放电到升压的电流。
+ *
  * OLED 四行含义：
  * 第 1 行：ST:当前电源状态       S电量百分比
  * 第 2 行：B电池电压             T温度
- * 第 3 行：O输出电压             输出电流
- * 第 4 行：PD:PD状态             I输入协商电压  F故障码
+ * 第 3 行：I输入电压             C充电电流
+ * 第 4 行：PD状态/输入档位       D放电电流/健康度
  *
  * 示例：
  * ST:CHG    S075
  * B3700mV T+025C
- * O5000mV 1200mA
- * PD:READY I5.0F01
- *
- * 说明：
- * F 是 Fault，不是 FOD。F00 表示无故障，F01 表示电池低压。
+ * I9000mV C0500
+ * R5.0 D1200H100
  ******************************************************************************/
 
 #include "ui_task.h"
@@ -55,10 +56,6 @@ static void UI_ShowPaddedString(uint8_t line, uint8_t column, const char *text, 
 {
     uint8_t i;
 
-    /*
-     * OLED_ShowString 不会自动清掉旧字符。
-     * 例如 READY 比 REJ 长，如果不补空格，旧字符会残留。
-     */
     for(i = 0; i < width; i++)
     {
         if(text[i] != '\0')
@@ -72,10 +69,15 @@ static void UI_ShowPaddedString(uint8_t line, uint8_t column, const char *text, 
     }
 }
 
+static uint16_t UI_AbsInt16(int16_t value)
+{
+    return (value < 0) ? (uint16_t)(-value) : (uint16_t)value;
+}
+
 void UI_Task_Init(void)
 {
     OLED_Init();
-    OLED_Clear();
+    OLED_ShowString(1, 1, "BOOT...");
 }
 
 void UI_Task(void)
@@ -83,10 +85,6 @@ void UI_Task(void)
     static uint16_t refresh_cnt = 0;
     const power_info_t *info;
 
-    /*
-     * main.c 每 100ms 调用一次 UI_Task。
-     * 这里再计数 5 次，相当于约 500ms 刷新一次 OLED，避免刷屏闪烁。
-     */
     refresh_cnt++;
     if(refresh_cnt < 5)
     {
@@ -96,36 +94,46 @@ void UI_Task(void)
 
     info = Power_Manager_GetInfo();
 
-    /* 第 1 行：电源状态 + 粗略 SOC。 */
+    /* 第 1 行：状态 + SOC。 */
     UI_ShowPaddedString(1, 1, "ST:", 3);
     UI_ShowPaddedString(1, 4, Power_Manager_GetStateName(), 7);
     UI_ShowPaddedString(1, 12, "S", 1);
     OLED_ShowNum(1, 13, info->soc, 3);
 
-    /*
-     * 第 2 行：电池电压 + 温度。
-     * 温度来自 BSP_GetNTC_TempC()，如果硬件没有 NTC，这个数只作占位显示。
-     */
+    /* 第 2 行：电池电压 + 温度。 */
     UI_ShowPaddedString(2, 1, "B", 1);
     OLED_ShowNum(2, 2, info->bat_mv, 4);
     UI_ShowPaddedString(2, 6, "mV T", 4);
     OLED_ShowSignedNum(2, 10, info->temp_c, 3);
     UI_ShowPaddedString(2, 14, "C  ", 3);
 
-    /* 第 3 行：5V 输出母线电压和输出电流，用来验证 5V/2A 输出能力。 */
-    UI_ShowPaddedString(3, 1, "O", 1);
-    OLED_ShowNum(3, 2, info->bus_mv, 4);
-    UI_ShowPaddedString(3, 6, "mV ", 3);
-    OLED_ShowNum(3, 9, info->bus_ma, 4);
-    UI_ShowPaddedString(3, 13, "mA ", 3);
+    /* 第 3 行：C口输入电压 + C口到降压/充电侧电流。 */
+    UI_ShowPaddedString(3, 1, "I", 1);
+    OLED_ShowNum(3, 2, info->input_mv, 4);
+    UI_ShowPaddedString(3, 6, "mV C", 4);
+    OLED_ShowNum(3, 10, UI_AbsInt16(info->charge_ma), 4);
+    UI_ShowPaddedString(3, 14, "mA", 2);
 
-    /* 第 4 行：PD 状态 + 输入协商电压 + 故障码。 */
-    UI_ShowPaddedString(4, 1, "PD:", 3);
-    UI_ShowPaddedString(4, 4, UI_PdStatusName(PDSink_GetStatus()), 5);
-    UI_ShowPaddedString(4, 9, "I", 1);
-    OLED_ShowNum(4, 10, PDSink_GetRequestedVoltage_mV() / 1000, 1);
-    UI_ShowPaddedString(4, 11, ".", 1);
-    OLED_ShowNum(4, 12, (PDSink_GetRequestedVoltage_mV() % 1000) / 100, 1);
-    UI_ShowPaddedString(4, 13, "F", 1);
-    OLED_ShowHexNum(4, 14, info->fault_flags, 2);
+    /*
+     * 第 4 行：
+     * 左侧显示 PD 简写，空间不够时 READY 用 R 代表；
+     * 中间显示 PD 协商档位；
+     * D 是电池到升压侧放电电流，不是 A口 5V 输出电流。
+     */
+    if(PDSink_GetStatus() == PD_SINK_READY)
+    {
+        UI_ShowPaddedString(4, 1, "R", 1);
+    }
+    else
+    {
+        UI_ShowPaddedString(4, 1, UI_PdStatusName(PDSink_GetStatus()), 1);
+    }
+    OLED_ShowNum(4, 2, PDSink_GetRequestedVoltage_mV() / 1000, 1);
+    UI_ShowPaddedString(4, 3, ".", 1);
+    OLED_ShowNum(4, 4, (PDSink_GetRequestedVoltage_mV() % 1000) / 100, 1);
+    UI_ShowPaddedString(4, 5, " D", 2);
+    OLED_ShowNum(4, 7, info->bus_ma, 4);
+    UI_ShowPaddedString(4, 11, "H", 1);
+    OLED_ShowNum(4, 12, info->soh, 3);
+    UI_ShowPaddedString(4, 15, "  ", 2);
 }

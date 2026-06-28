@@ -23,10 +23,14 @@
 /* 确认 PA5 确实接了 NTC 温敏电阻后，再改成 1 打开温度保护。 */
 #define POWER_ENABLE_TEMP_PROTECT  0
 
-/* 输出目标：5V/2A。过流阈值留一点余量，超过 2.3A 进入保护。 */
+/*
+ * 输出目标：A口 5V/2A。
+ * 现在第二颗 INA219 放在“电池 -> 升压”之间，测到的是升压输入侧放电电流，
+ * 不是 A口 5V 输出电流。5V/2A 输出时，电池侧电流可能接近 3A。
+ */
 #define OUT_TARGET_MV      5000
 #define OUT_TARGET_MA      2000
-#define OUT_OVER_CURRENT   2300
+#define DISCHARGE_OVER_CURRENT  3200
 #define LOAD_DETECT_MA     50
 
 /*
@@ -34,7 +38,7 @@
  * F00：无故障
  * F01：电池低压
  * F02：电池过压
- * F04：输出过流
+ * F04：放电/升压输入侧过流
  * F08：温度异常
  */
 #define POWER_FAULT_NONE      0x00
@@ -45,17 +49,22 @@
 
 typedef struct
 {
-    uint16_t bat_mv;           /* 电池电压，单位 mV */
-    uint16_t bat_ma;           /* 电池侧电流，单位 mA，方向由底层采样定义 */
-    uint16_t bus_mv;           /* 5V 输出母线电压，单位 mV */
-    uint16_t bus_ma;           /* 5V 输出电流，单位 mA */
+    uint16_t input_mv;         /* C口输入电压，来自 INA219 #1，单位 mV */
+    int16_t charge_ma;         /* C口到降压/充电侧电流，来自 INA219 #1，单位 mA */
+    uint16_t bat_mv;           /* 电池电压，来自 INA219 #2，单位 mV */
+    int16_t bat_ma;            /* 电池净电流，充电为正、放电为负，单位 mA */
+    uint16_t bus_mv;           /* 当前无 A口电压采样，放电时按目标 5000mV 显示 */
+    uint16_t bus_ma;           /* 电池到升压侧放电电流，来自 INA219 #2，单位 mA */
     int16_t temp_c;            /* 电池温度，单位摄氏度；没有 NTC 时仅作显示参考 */
 
     uint8_t input_attached;    /* 是否检测到 Type-C/PD 输入 */
     uint8_t load_attached;     /* 是否检测到输出端有负载 */
     uint8_t pd_ready;          /* PD 是否已经协商完成 */
 
-    uint8_t soc;               /* 粗略电量百分比，第一版按电压线性估算 */
+    uint8_t soc;               /* SOC 百分比，来自 SOC 库仑计模块 */
+    uint16_t remain_mAh;       /* SOC 模块估算的剩余容量 */
+    uint8_t soh;               /* SOH 电池健康度，第一版为展示型评分 */
+    uint16_t full_capacity_mAh; /* SOC 模块学习到的满电容量 */
     uint8_t fault_flags;       /* 故障标志，见 POWER_FAULT_xxx */
 } power_info_t;
 
@@ -73,9 +82,12 @@ typedef uint8_t power_state_t;
  * 真正的硬件读取和使能控制都放到 board_power_port.c，方便和底层同学分工。
  */
 uint16_t bsp_get_bat_voltage_mv(void);
-uint16_t bsp_get_bat_current_ma(void);
+int16_t bsp_get_bat_current_ma(void);
 uint16_t bsp_get_bus_voltage_mv(void);
 uint16_t bsp_get_bus_current_ma(void);
+uint16_t bsp_get_input_voltage_mv(void);
+int16_t bsp_get_charge_current_ma(void);
+uint16_t bsp_get_discharge_current_ma(void);
 int16_t bsp_get_bat_temp_c(void);
 
 uint8_t bsp_is_input_attached(void);

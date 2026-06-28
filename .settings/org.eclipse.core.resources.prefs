@@ -1,6 +1,13 @@
 eclipse.preferences.version=1
+encoding//User/AD.c=UTF-8
+encoding//User/AD.h=UTF-8
+encoding//User/INA219.c=UTF-8
+encoding//User/INA219.h=UTF-8
+encoding//User/OLED.c=UTF-8
 encoding//User/PDSink.c=UTF-8
 encoding//User/PDSink.h=UTF-8
+encoding//User/SOC.c=UTF-8
+encoding//User/SOC.h=UTF-8
 encoding//User/board_power_port.c=UTF-8
 encoding//User/board_power_port.h=UTF-8
 encoding//User/main.c=UTF-8

@@ -10,12 +10,12 @@
  *******************************************************************************/
 
 #include "power_manager.h"
+#include "SOC.h"
 
 static power_info_t g_power_info;
 static power_state_t g_power_state = PM_STATE_INIT;
 
 /* 本文件内部函数声明，放在前面可以让 IDE 大纲和跳转更稳定。 */
-static uint8_t Power_Manager_CalcSoc(uint16_t bat_mv);
 static uint8_t Power_Manager_CalcFaultFlags(const power_info_t *info);
 static uint8_t Power_Manager_IsRecoverable(const power_info_t *info);
 static uint8_t Power_Manager_HasFatalFault(const power_info_t *info);
@@ -23,21 +23,6 @@ static uint8_t Power_Manager_IsLowBatOnly(const power_info_t *info);
 static void Power_Manager_UpdateInfo(void);
 static void Power_Manager_ApplyOutput(power_state_t state);
 static void Power_Manager_SetState(power_state_t state);
-
-static uint8_t Power_Manager_CalcSoc(uint16_t bat_mv)
-{
-    /* 第一版 SOC 用电池电压线性估算，后续可以换成查表或库仑计。 */
-    if(bat_mv <= BAT_LOW_MV)
-    {
-        return 0;
-    }
-    if(bat_mv >= BAT_FULL_MV)
-    {
-        return 100;
-    }
-
-    return (uint8_t)(((uint32_t)(bat_mv - BAT_LOW_MV) * 100) / (BAT_FULL_MV - BAT_LOW_MV));
-}
 
 static uint8_t Power_Manager_CalcFaultFlags(const power_info_t *info)
 {
@@ -52,7 +37,7 @@ static uint8_t Power_Manager_CalcFaultFlags(const power_info_t *info)
     {
         flags |= POWER_FAULT_BAT_OVER;
     }
-    if(info->bus_ma > OUT_OVER_CURRENT)
+    if(info->bus_ma > DISCHARGE_OVER_CURRENT)
     {
         flags |= POWER_FAULT_OUT_OC;
     }
@@ -73,7 +58,7 @@ static uint8_t Power_Manager_IsRecoverable(const power_info_t *info)
         return 0;
     }
     if((info->bat_mv > BAT_OVER_MV) ||
-       (info->bus_ma > OUT_OVER_CURRENT)
+       (info->bus_ma > DISCHARGE_OVER_CURRENT)
 #if POWER_ENABLE_TEMP_PROTECT
        || (info->temp_c < BAT_TEMP_LOW_C) ||
        (info->temp_c > BAT_TEMP_HIGH_C)
@@ -110,6 +95,8 @@ static void Power_Manager_UpdateInfo(void)
     uint8_t load_now;
 
     /* 从底层适配层读取最新 AD/PD/GPIO 信息。 */
+    g_power_info.input_mv = bsp_get_input_voltage_mv();
+    g_power_info.charge_ma = bsp_get_charge_current_ma();
     g_power_info.bat_mv = bsp_get_bat_voltage_mv();
     g_power_info.bat_ma = bsp_get_bat_current_ma();
     g_power_info.bus_mv = bsp_get_bus_voltage_mv();
@@ -147,8 +134,18 @@ static void Power_Manager_UpdateInfo(void)
     g_power_info.input_attached = (input_cnt >= 2);
     g_power_info.load_attached = (load_cnt >= 2);
     g_power_info.pd_ready = bsp_is_pd_ready();
-    g_power_info.soc = Power_Manager_CalcSoc(g_power_info.bat_mv);
+
+    /*
+     * SOC_Update 约每 100ms 调用一次。
+     * bat_ma 约定：充电为正、放电为负，正好匹配 SOC 模块的库仑计输入。
+     */
+    SOC_Update(g_power_info.bat_mv, g_power_info.bat_ma, 100);
+    g_power_info.soc = SOC_GetPercent();
+    g_power_info.remain_mAh = SOC_GetRemaining_mAh();
     g_power_info.fault_flags = Power_Manager_CalcFaultFlags(&g_power_info);
+    SOC_ReportFault(g_power_info.fault_flags);
+    g_power_info.soh = SOC_GetHealthPercent();
+    g_power_info.full_capacity_mAh = SOC_GetFullCapacity_mAh();
 }
 
 static void Power_Manager_ApplyOutput(power_state_t state)
@@ -178,11 +175,13 @@ static void Power_Manager_SetState(power_state_t state)
     {
         g_power_state = state;
         Power_Manager_ApplyOutput(g_power_state);
-        printf("PM state -> %s, fault=0x%02x, bat=%umV, bus=%umV, temp=%dC\r\n",
+        printf("PM state -> %s, fault=0x%02x, in=%umV, bat=%umV, ibat=%dmA, dis=%umA, temp=%dC\r\n",
                Power_Manager_GetStateName(),
                g_power_info.fault_flags,
+               g_power_info.input_mv,
                g_power_info.bat_mv,
-               g_power_info.bus_mv,
+               g_power_info.bat_ma,
+               g_power_info.bus_ma,
                g_power_info.temp_c);
     }
 }

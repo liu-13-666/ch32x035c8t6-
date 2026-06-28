@@ -3,13 +3,10 @@
  *
  *  Created on: 2026年5月11日
  *      Author: 16702
- * Description: 五通道ADC采集
- *   - PA2 (ADC_CH2): B口输出电压 (mV)
- *   - PA3 (ADC_CH3): 电池电压 (mV)
- *   - PA4 (ADC_CH4): 充电电流 (mA)
- *   - PA5 (ADC_CH5): NTC热敏电阻 → 温度 (°C)
- *   - PA6 (ADC_CH6): B口输出电流 (mA)
- *   TIM1_CH1 PWM 每50ms触发一次，DMA循环传输5个通道
+ * Description: 单通道ADC采集 — 仅NTC热敏电阻温度
+ *   - PA5 (ADC_CH5): NTC分压 → 温度 (°C)
+ *   - TIM1_CH1 PWM 每50ms触发一次，DMA循环传输1个通道
+ *   (电池电压/充电电流/输出电压/输出电流 已迁移至 INA219)
  */
 #include "ch32x035.h"
 
@@ -32,8 +29,12 @@ static float my_logf(float x)
     return 2.0f * sum + (float)e * 0.69314718f;
 }
 
-#define ADC_BUF_SIZE    5    // 5通道: VOUT / VBAT / IOUT / NTC / IOUT2
-volatile uint16_t ADC_Buf[ADC_BUF_SIZE];  // DMA传输目标缓冲区
+/* ================================================================ */
+/*  单通道: 仅 PA5(CH5) NTC                                          */
+/*  缓冲索引 0 → ADC_CH5(PA5)                                        */
+/* ================================================================ */
+#define ADC_BUF_SIZE    1
+volatile uint16_t ADC_Buf[ADC_BUF_SIZE];
 
 /*
  * NTC热敏电阻参数（可根据实际使用的NTC型号修改）
@@ -75,7 +76,7 @@ void BSP_TIM1_Init(void)
     TIM_Cmd(TIM1, ENABLE);
 }
 
-/* @brief  初始化ADC1 + DMA，三通道扫描采集 */
+/* @brief  初始化ADC1 + DMA，单通道扫描采集 (仅PA5 NTC) */
 void BSP_ADC_Initt(void)
 {
     ADC_InitTypeDef  ADC_InitStructure;
@@ -87,17 +88,17 @@ void BSP_ADC_Initt(void)
     RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA, ENABLE);
     RCC_AHBPeriphClockCmd(RCC_AHBPeriph_DMA1, ENABLE);
 
-    /* 2. 配置五个GPIO为模拟输入: PA2(VOUT) PA3(VBAT) PA4(IOUT) PA5(NTC) PA6(IOUT2) */
-    GPIO_InitStructure.GPIO_Pin  = GPIO_Pin_2 | GPIO_Pin_3 | GPIO_Pin_4 | GPIO_Pin_5 | GPIO_Pin_6;
+    /* 2. 仅配置 PA5 为模拟输入: NTC 分压中点 */
+    GPIO_InitStructure.GPIO_Pin  = GPIO_Pin_5;
     GPIO_InitStructure.GPIO_Mode = GPIO_Mode_AIN;
     GPIO_Init(GPIOA, &GPIO_InitStructure);
 
-    /* 3. DMA配置: DMA1_Channel1, 外设→内存, 5个半字, 循环模式 */
+    /* 3. DMA配置: DMA1_Channel1, 外设→内存, 1个半字, 循环模式 */
     DMA_DeInit(DMA1_Channel1);
     DMA_InitStructure.DMA_PeripheralBaseAddr = (uint32_t)&ADC1->RDATAR;
     DMA_InitStructure.DMA_MemoryBaseAddr     = (uint32_t)ADC_Buf;
     DMA_InitStructure.DMA_DIR                = DMA_DIR_PeripheralSRC;
-    DMA_InitStructure.DMA_BufferSize         = ADC_BUF_SIZE;             /* 5 */
+    DMA_InitStructure.DMA_BufferSize         = ADC_BUF_SIZE;             /* 1 */
     DMA_InitStructure.DMA_PeripheralInc      = DMA_PeripheralInc_Disable;
     DMA_InitStructure.DMA_MemoryInc          = DMA_MemoryInc_Enable;
     DMA_InitStructure.DMA_PeripheralDataSize = DMA_PeripheralDataSize_HalfWord;
@@ -108,7 +109,7 @@ void BSP_ADC_Initt(void)
 
     DMA_Cmd(DMA1_Channel1, ENABLE);
 
-    /* 4. ADC配置: 独立模式, 扫描模式, TIM1_CH1硬件触发 */
+    /* 4. ADC配置: 独立模式, 扫描模式, TIM1_CH1硬件触发 (单通道) */
     ADC_CLKConfig(ADC1, ADC_CLK_Div6);
     ADC_DeInit(ADC1);
     ADC_InitStructure.ADC_Mode               = ADC_Mode_Independent;
@@ -116,15 +117,11 @@ void BSP_ADC_Initt(void)
     ADC_InitStructure.ADC_ScanConvMode       = ENABLE;
     ADC_InitStructure.ADC_ExternalTrigConv   = ADC_ExternalTrigConv_T1_CC1;
     ADC_InitStructure.ADC_DataAlign          = ADC_DataAlign_Right;
-    ADC_InitStructure.ADC_NbrOfChannel       = 5;                       /* 5通道 */
+    ADC_InitStructure.ADC_NbrOfChannel       = 1;                       /* 单通道 */
     ADC_Init(ADC1, &ADC_InitStructure);
 
-    /* 5. 配置三通道扫描顺序及采样时间 */
-    ADC_RegularChannelConfig(ADC1, ADC_Channel_3, 1, ADC_SampleTime_11Cycles);  /* CH3(PA3) → ADC_Buf[0] */
-    ADC_RegularChannelConfig(ADC1, ADC_Channel_4, 2, ADC_SampleTime_11Cycles);  /* CH4(PA4) → ADC_Buf[1] */
-    ADC_RegularChannelConfig(ADC1, ADC_Channel_5, 3, ADC_SampleTime_11Cycles);  /* CH5(PA5) → ADC_Buf[2] */
-    ADC_RegularChannelConfig(ADC1, ADC_Channel_2, 4, ADC_SampleTime_11Cycles);  /* CH2(PA2) → ADC_Buf[3] */
-    ADC_RegularChannelConfig(ADC1, ADC_Channel_6, 5, ADC_SampleTime_11Cycles);  /* CH6(PA6) → ADC_Buf[4] */
+    /* 5. 配置单通道扫描顺序及采样时间: CH5(PA5) NTC → ADC_Buf[0] */
+    ADC_RegularChannelConfig(ADC1, ADC_Channel_5, 1, ADC_SampleTime_11Cycles);
 
     /* 6. 启动ADC + DMA + 外部触发 */
     ADC_DMACmd(ADC1, ENABLE);
@@ -132,28 +129,11 @@ void BSP_ADC_Initt(void)
     ADC_ExternalTrigConvCmd(ADC1, ENABLE);
 }
 
-/* @brief  从DMA缓冲区读取电池电压 (mV)
- *         缓冲索引0 → ADC_CH3(PA3)
- */
-uint16_t BSP_GetVBAT_mV(void)
-{
-    return (uint16_t)((uint32_t)ADC_Buf[0] * ADC_VREF_mV / ADC_MAX);
-}
-
-/* @brief  从DMA缓冲区读取电流 (mA)
- *         缓冲索引1 → ADC_CH4(PA4)
- */
-uint16_t BSP_GetIOUT_mA(void)
-{
-    uint16_t voltage_mv = (uint16_t)((uint32_t)ADC_Buf[1] * ADC_VREF_mV / ADC_MAX);
-    return voltage_mv / 100 * 1000;  /* I = U/R, R=100mΩ */
-}
-
 /* @brief  从DMA缓冲区读取NTC热敏电阻温度 (°C)
- *         缓冲索引2 → ADC_CH5(PA5): NTC与固定电阻分压
+ *         缓冲索引0 → ADC_CH5(PA5): NTC与固定电阻分压
  *
- * 电路: 3.3V ─┬─ 固定电阻 R_fixed ─┬─ NTC ─ GND
- *             │                    └→ ADC_CH5
+ * 电路: 3.3V ─┬─ 固定电阻 R_fixed(10k) ─┬─ NTC(10k@25°C) ─ GND
+ *             │                         └→ ADC_CH5(PA5)
  *
  * 计算流程:
  *   1. ADC原始值 → 电压: V_ntc = ADC_val * VREF / 4095
@@ -165,7 +145,7 @@ uint16_t BSP_GetIOUT_mA(void)
  */
 int16_t BSP_GetNTC_TempC(void)
 {
-    uint16_t adc_val = ADC_Buf[2];
+    uint16_t adc_val = ADC_Buf[0];
 
     if (adc_val == 0) {
         return -40;
@@ -182,25 +162,8 @@ int16_t BSP_GetNTC_TempC(void)
     return (int16_t)temp_c;
 }
 
-/* @brief  从DMA缓冲区读取B口输出电压 (mV)
- *         缓冲索引3 → ADC_CH2(PA2): 输出电压经电阻分压后接入
- */
-uint16_t BSP_GetVOUT_mV(void)
-{
-    return (uint16_t)((uint32_t)ADC_Buf[3] * ADC_VREF_mV / ADC_MAX);
-}
-
-/* @brief  从DMA缓冲区读取B口输出电流 (mA)
- *         缓冲索引4 → ADC_CH6(PA6): 输出电流经采样电阻转换为电压
- */
-uint16_t BSP_GetIOUT2_mA(void)
-{
-    uint16_t voltage_mv = (uint16_t)((uint32_t)ADC_Buf[4] * ADC_VREF_mV / ADC_MAX);
-    return voltage_mv / 100 * 1000;
-}
-
 /* @brief  获取ADC原始值
- * @param  ch: 索引 0=VBAT(PA3) 1=IOUT(PA4) 2=NTC(PA5) 3=VOUT(PA2) 4=IOUT2(PA6)
+ * @param  ch: 0 = NTC(PA5)
  */
 uint16_t BSP_GetADC_Value(uint8_t ch)
 {

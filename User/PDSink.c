@@ -9,8 +9,9 @@
  *
  * 当前输入策略：
  * 1. 如果适配器支持 9V/2A，优先申请 9V 输入。
- * 2. 如果不支持 9V/2A，则退回申请 5V/2A。
- * 3. 作品输出侧目标仍然是 5V/2A，输入 9V 只是提高输入功率余量。
+ * 2. 如果 9V 协商失败、超时、被拒绝，则自动退回申请 5V/2A。
+ * 3. 如果适配器本来不支持 9V/2A，则直接申请 5V/2A。
+ * 4. 作品输出侧目标仍然是 5V/2A，输入 9V 只是提高输入功率余量。
  *
  * OLED 状态含义：
  *   CONN  ：CC 已连接，正在等待适配器发 Source Cap。
@@ -58,12 +59,38 @@ static volatile uint16_t g_NegotiatedVoltage_mV = 0;
 static volatile uint16_t g_NegotiatedCurrent_mA = 0;
 static volatile PDSink_Status g_PD_Status = PD_SINK_DISCONNECTED;
 
+/*
+ * Source Cap 缓存。
+ * 适配器发来的 Source Cap 后面可能被 GoodCRC 或 Request 发送过程覆盖，
+ * 所以这里保存一份，方便 9V 失败后不用等下一次 Source Cap，直接退回 5V。
+ */
+static uint8_t  g_SourceCap_Buf[28];
+static uint8_t  g_SourceCap_Num = 0;
+static uint8_t  g_PDO_9V_Index = 0;
+static uint8_t  g_PDO_5V_Index = 0;
+static uint8_t  g_Trying_9V = 0;
+
 uint16_t PDSink_GetRequestedVoltage_mV(void) { return g_NegotiatedVoltage_mV; }
 uint16_t PDSink_GetRequestedCurrent_mA(void) { return g_NegotiatedCurrent_mA; }
 PDSink_Status PDSink_GetStatus(void) { return g_PD_Status; }
 
 static void PD_Phy_SendPack(uint8_t mode, uint8_t *pbuf, uint8_t len, uint8_t sop);
 static void PD_Rx_Mode(void);
+
+static void PD_Clear_SourceCap_Cache(void)
+{
+    uint8_t i;
+
+    for(i = 0; i < sizeof(g_SourceCap_Buf); i++)
+    {
+        g_SourceCap_Buf[i] = 0;
+    }
+
+    g_SourceCap_Num = 0;
+    g_PDO_9V_Index = 0;
+    g_PDO_5V_Index = 0;
+    g_Trying_9V = 0;
+}
 
 /*
  * USBPD 外设中断服务函数。
@@ -267,9 +294,15 @@ static uint8_t PD_IsVoltageMatch(uint16_t voltage, uint16_t target)
 }
 
 /* 只接受 Fixed Supply PDO，暂时不处理 PPS/APDO。 */
+static uint8_t PD_IsFixedPDO_FromBuf(uint8_t *srccap, uint8_t pdo_index)
+{
+    return ((srccap[((pdo_index - 1) << 2) + 3] & 0xC0) == 0x00);
+}
+
+/* 只接受 Fixed Supply PDO，暂时不处理 PPS/APDO。 */
 static uint8_t PD_IsFixedPDO(uint8_t pdo_index)
 {
-    return ((PD_Rx_Buf[2 + ((pdo_index - 1) << 2) + 3] & 0xC0) == 0x00);
+    return PD_IsFixedPDO_FromBuf(&PD_Rx_Buf[2], pdo_index);
 }
 
 /*
@@ -292,6 +325,9 @@ static uint8_t PD_Select_Input_PDO(void)
         return 1;
     }
 
+    g_PDO_9V_Index = 0;
+    g_PDO_5V_Index = 0;
+
     for(i = 1; i <= len; i++)
     {
         PD_PDO_Analyse(i, &PD_Rx_Buf[2], &current, &voltage);
@@ -299,7 +335,8 @@ static uint8_t PD_Select_Input_PDO(void)
            PD_IsVoltageMatch(voltage, PD_INPUT_PRIMARY_MV) &&
            (current >= PD_INPUT_TARGET_MA))
         {
-            return i;
+            g_PDO_9V_Index = i;
+            break;
         }
     }
 
@@ -310,8 +347,19 @@ static uint8_t PD_Select_Input_PDO(void)
            PD_IsVoltageMatch(voltage, PD_INPUT_FALLBACK_MV) &&
            (current >= PD_INPUT_TARGET_MA))
         {
-            return i;
+            g_PDO_5V_Index = i;
+            break;
         }
+    }
+
+    if(g_PDO_9V_Index != 0)
+    {
+        return g_PDO_9V_Index;
+    }
+
+    if(g_PDO_5V_Index != 0)
+    {
+        return g_PDO_5V_Index;
     }
 
     for(i = 1; i <= len; i++)
@@ -332,7 +380,43 @@ static uint8_t PD_Select_Input_PDO(void)
  */
 static void PD_Save_Adapter_SrcCap(void)
 {
-    (void)PD_Rx_Buf;
+    uint8_t i;
+    uint8_t len;
+    uint16_t current;
+    uint16_t voltage;
+
+    len = ((PD_Rx_Buf[1] >> 4) & 0x07);
+    if(len > 7)
+    {
+        len = 7;
+    }
+
+    g_SourceCap_Num = len;
+    g_PDO_9V_Index = 0;
+    g_PDO_5V_Index = 0;
+
+    for(i = 0; i < (uint8_t)(len * 4); i++)
+    {
+        g_SourceCap_Buf[i] = PD_Rx_Buf[2 + i];
+    }
+
+    for(i = 1; i <= len; i++)
+    {
+        PD_PDO_Analyse(i, g_SourceCap_Buf, &current, &voltage);
+        if(PD_IsFixedPDO_FromBuf(g_SourceCap_Buf, i) &&
+           PD_IsVoltageMatch(voltage, PD_INPUT_PRIMARY_MV) &&
+           (current >= PD_INPUT_TARGET_MA))
+        {
+            g_PDO_9V_Index = i;
+        }
+
+        if(PD_IsFixedPDO_FromBuf(g_SourceCap_Buf, i) &&
+           PD_IsVoltageMatch(voltage, PD_INPUT_FALLBACK_MV) &&
+           (current >= PD_INPUT_TARGET_MA))
+        {
+            g_PDO_5V_Index = i;
+        }
+    }
 
     /* Fixed Supply PDO 的 BIT[31:30] 为 00。 */
 }
@@ -349,6 +433,9 @@ static void PDO_Request(uint8_t pdo_index)
         pdo_index = 1;
 
     PD_PDO_Analyse(pdo_index, &PD_Rx_Buf[2], &Current, &Voltage);
+    g_Trying_9V = (PD_TRY_9V_INPUT &&
+                   (g_PDO_9V_Index != 0) &&
+                   (pdo_index == g_PDO_9V_Index)) ? 1 : 0;
     request_current = (Current >= PD_REQUEST_CURRENT_MA) ? PD_REQUEST_CURRENT_MA : Current;
 
     /*
@@ -393,6 +480,38 @@ static void PDO_Request(uint8_t pdo_index)
            Current,
            request_current,
            status);
+}
+
+/*
+ * 9V 失败后退回 5V。
+ * 返回 1 表示已经重新发起 5V Request，返回 0 表示没有可用 5V PDO。
+ */
+static uint8_t PD_Try_Fallback_5V(void)
+{
+    uint8_t i;
+
+    if((g_Trying_9V == 0) || (g_PDO_5V_Index == 0) || (g_SourceCap_Num == 0))
+    {
+        return 0;
+    }
+
+    for(i = 0; i < (uint8_t)(g_SourceCap_Num * 4); i++)
+    {
+        PD_Rx_Buf[2 + i] = g_SourceCap_Buf[i];
+    }
+    PD_Rx_Buf[1] = (PD_Rx_Buf[1] & 0x8F) | ((g_SourceCap_Num & 0x07) << 4);
+
+    g_Trying_9V = 0;
+    printf("PD 9V failed, fallback to 5V PDO=%u\r\n", g_PDO_5V_Index);
+    PDO_Request(g_PDO_5V_Index);
+
+    if(PD_Ctl.PD_State == STA_RX_ACCEPT_WAIT)
+    {
+        g_PD_Status = PD_SINK_NEGOTIATING;
+        return 1;
+    }
+
+    return 0;
 }
 
 /*
@@ -510,6 +629,7 @@ void PDSink_Init(void)
     PD_Rx_Mode();
 
     g_PD_Status = PD_SINK_DISCONNECTED;
+    PD_Clear_SourceCap_Cache();
 }
 
 /* PD 主任务，由 main.c 高频调用。 */
@@ -555,6 +675,7 @@ void PDSink_Task(void)
                 PD_Ctl.Flag.Bit.Stop_Det_Chk = 0;
                 PD_Ctl.PD_State = STA_IDLE;
                 g_PD_Status = PD_SINK_DISCONNECTED;
+                PD_Clear_SourceCap_Cache();
             }
         }
         else
@@ -613,6 +734,7 @@ void PDSink_Task(void)
                     PD_Ctl.Flag.Bit.Stop_Det_Chk = 0;
                     PD_Ctl.PD_State = STA_IDLE;
                     g_PD_Status = PD_SINK_DISCONNECTED;
+                    PD_Clear_SourceCap_Cache();
                 }
                 else
                 {
@@ -621,6 +743,7 @@ void PDSink_Task(void)
                     PD_Ctl.Flag.Bit.PD_Comm_Succ = 0;
                     PD_Ctl.PD_State = STA_IDLE;
                     g_PD_Status = PD_SINK_DISCONNECTED;
+                    PD_Clear_SourceCap_Cache();
                     USBPD->PORT_CC1 = CC_CMP_66 | CC_PD;
                     USBPD->PORT_CC2 = CC_CMP_66 | CC_PD;
                     PD_Rx_Mode();
@@ -634,10 +757,13 @@ void PDSink_Task(void)
             PD_Ctl.PD_Comm_Timer++;
             if (PD_Ctl.PD_Comm_Timer > 500)
             {
-                PD_Ctl.Flag.Bit.Stop_Det_Chk = 0;
-                g_PD_Status = PD_SINK_ACCEPT_TIMEOUT;
-                PD_Ctl.PD_State = STA_IDLE;
-                PD_Ctl.PD_Comm_Timer = 0;
+                if(!PD_Try_Fallback_5V())
+                {
+                    PD_Ctl.Flag.Bit.Stop_Det_Chk = 0;
+                    g_PD_Status = PD_SINK_ACCEPT_TIMEOUT;
+                    PD_Ctl.PD_State = STA_IDLE;
+                    PD_Ctl.PD_Comm_Timer = 0;
+                }
             }
             break;
 
@@ -646,10 +772,13 @@ void PDSink_Task(void)
             PD_Ctl.PD_Comm_Timer++;
             if (PD_Ctl.PD_Comm_Timer > 500)
             {
-                PD_Ctl.Flag.Bit.Stop_Det_Chk = 0;
-                g_PD_Status = PD_SINK_PSRDY_TIMEOUT;
-                PD_Ctl.PD_State = STA_TX_SOFTRST;
-                PD_Ctl.PD_Comm_Timer = 0;
+                if(!PD_Try_Fallback_5V())
+                {
+                    PD_Ctl.Flag.Bit.Stop_Det_Chk = 0;
+                    g_PD_Status = PD_SINK_PSRDY_TIMEOUT;
+                    PD_Ctl.PD_State = STA_TX_SOFTRST;
+                    PD_Ctl.PD_Comm_Timer = 0;
+                }
             }
             break;
 
@@ -659,6 +788,7 @@ void PDSink_Task(void)
             {
                 PD_Ctl.PD_State = STA_IDLE;
                 g_PD_Status = PD_SINK_DISCONNECTED;
+                PD_Clear_SourceCap_Cache();
             }
             break;
 
@@ -715,15 +845,21 @@ void PDSink_Task(void)
                 break;
 
             case DEF_TYPE_REJECT:
-                PD_Ctl.PD_State = STA_IDLE;
-                g_PD_Status = PD_SINK_REJECTED;
-                PD_Ctl.PD_Comm_Timer = 0;
+                if(!PD_Try_Fallback_5V())
+                {
+                    PD_Ctl.PD_State = STA_IDLE;
+                    g_PD_Status = PD_SINK_REJECTED;
+                    PD_Ctl.PD_Comm_Timer = 0;
+                }
                 break;
 
             case DEF_TYPE_WAIT:
-                PD_Ctl.PD_State = STA_IDLE;
-                g_PD_Status = PD_SINK_WAIT;
-                PD_Ctl.PD_Comm_Timer = 0;
+                if(!PD_Try_Fallback_5V())
+                {
+                    PD_Ctl.PD_State = STA_IDLE;
+                    g_PD_Status = PD_SINK_WAIT;
+                    PD_Ctl.PD_Comm_Timer = 0;
+                }
                 break;
 
             case DEF_TYPE_PS_RDY:
