@@ -1,5 +1,18 @@
 # Build outputs
 /obj/
+*.elf
+*.hex
+*.bin
+*.map
+*.lst
+*.o
+*.d
+*.su
+*.cyclo
+
+# Local IDE generated state
+/.settings/language.settings.xml
+*.launch
 
 # Editor and OS noise
 .DS_Store
