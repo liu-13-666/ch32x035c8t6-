@@ -195,6 +195,8 @@ void Power_Manager_Init(void)
 
 void Power_Manager_Task(void)
 {
+    static uint8_t protect_recover_cnt = 0;
+
     Power_Manager_UpdateInfo();
 
     switch(g_power_state)
@@ -253,6 +255,7 @@ void Power_Manager_Task(void)
             if(g_power_info.input_attached && g_power_info.pd_ready &&
                Power_Manager_IsLowBatOnly(&g_power_info))
             {
+                protect_recover_cnt = 0;
                 Power_Manager_SetState(PM_STATE_CHARGING);
             }
             else
@@ -261,7 +264,20 @@ void Power_Manager_Task(void)
             }
             if(Power_Manager_IsRecoverable(&g_power_info))
             {
-                Power_Manager_SetState(PM_STATE_IDLE);
+                if(protect_recover_cnt < PROTECT_RECOVER_CONFIRM_CNT)
+                {
+                    protect_recover_cnt++;
+                }
+
+                if(protect_recover_cnt >= PROTECT_RECOVER_CONFIRM_CNT)
+                {
+                    protect_recover_cnt = 0;
+                    Power_Manager_SetState(PM_STATE_IDLE);
+                }
+            }
+            else
+            {
+                protect_recover_cnt = 0;
             }
             break;
 

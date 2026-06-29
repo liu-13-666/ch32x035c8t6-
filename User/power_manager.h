@@ -33,6 +33,9 @@
 #define DISCHARGE_OVER_CURRENT  3200
 #define LOAD_DETECT_MA     50
 
+/* PROTECT 状态下故障连续消失多少次后才允许恢复，Power_Manager_Task 约 100ms 调一次。 */
+#define PROTECT_RECOVER_CONFIRM_CNT  5
+
 /*
  * OLED 第 4 行显示的故障码：
  * F00：无故障
