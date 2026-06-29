@@ -133,6 +133,122 @@ void OLED_Clear(void)
     }
 }
 
+void OLED_ShowImage(uint8_t X, uint8_t Page, uint8_t Width, uint8_t Height, const uint8_t *Image)
+{
+    uint8_t page_count;
+    uint8_t page;
+    uint8_t x;
+
+    page_count = (Height + 7) / 8;
+    for(page = 0; page < page_count; page++)
+    {
+        OLED_SetCursor(Page + page, X);
+        for(x = 0; x < Width; x++)
+        {
+            OLED_WriteData(Image[page * Width + x]);
+        }
+    }
+}
+
+void OLED_DrawProgressBar(uint8_t X, uint8_t Page, uint8_t Width, uint8_t Percent)
+{
+    uint8_t i;
+    uint8_t fill_width;
+
+    if(Percent > 100)
+    {
+        Percent = 100;
+    }
+
+    fill_width = (uint8_t)(((uint16_t)(Width - 2) * Percent) / 100);
+
+    OLED_SetCursor(Page, X);
+    OLED_WriteData(0x7E);
+    for(i = 0; i < (uint8_t)(Width - 2); i++)
+    {
+        OLED_WriteData((i < fill_width) ? 0x7E : 0x42);
+    }
+    OLED_WriteData(0x7E);
+}
+
+/*
+ * 5x7 小字体，只放启动页会用到的字符。
+ * 每个字符占 5 列，显示时额外补 1 列空白，所以宽度约为 6 像素。
+ */
+static const uint8_t *OLED_GetSmallFont(char Char)
+{
+    static const uint8_t font_space[5] = {0x00,0x00,0x00,0x00,0x00};
+    static const uint8_t font_9[5]     = {0x06,0x49,0x49,0x29,0x1E};
+    static const uint8_t font_A[5]     = {0x7E,0x11,0x11,0x11,0x7E};
+    static const uint8_t font_D[5]     = {0x7F,0x41,0x41,0x22,0x1C};
+    static const uint8_t font_E[5]     = {0x7F,0x49,0x49,0x49,0x41};
+    static const uint8_t font_G[5]     = {0x3E,0x41,0x49,0x49,0x7A};
+    static const uint8_t font_I[5]     = {0x00,0x41,0x7F,0x41,0x00};
+    static const uint8_t font_N[5]     = {0x7F,0x02,0x0C,0x10,0x7F};
+    static const uint8_t font_S[5]     = {0x46,0x49,0x49,0x49,0x31};
+    static const uint8_t font_d[5]     = {0x38,0x44,0x44,0x48,0x7F};
+    static const uint8_t font_e[5]     = {0x38,0x54,0x54,0x54,0x18};
+    static const uint8_t font_f[5]     = {0x08,0x7E,0x09,0x01,0x02};
+    static const uint8_t font_g[5]     = {0x18,0xA4,0xA4,0xA4,0x7C};
+    static const uint8_t font_h[5]     = {0x7F,0x08,0x04,0x04,0x78};
+    static const uint8_t font_i[5]     = {0x00,0x44,0x7D,0x40,0x00};
+    static const uint8_t font_n[5]     = {0x7C,0x08,0x04,0x04,0x78};
+    static const uint8_t font_o[5]     = {0x38,0x44,0x44,0x44,0x38};
+    static const uint8_t font_r[5]     = {0x7C,0x08,0x04,0x04,0x08};
+    static const uint8_t font_s[5]     = {0x48,0x54,0x54,0x54,0x20};
+    static const uint8_t font_t[5]     = {0x04,0x3F,0x44,0x40,0x20};
+
+    switch(Char)
+    {
+        case '9': return font_9;
+        case 'A': return font_A;
+        case 'D': return font_D;
+        case 'E': return font_E;
+        case 'G': return font_G;
+        case 'I': return font_I;
+        case 'N': return font_N;
+        case 'S': return font_S;
+        case 'd': return font_d;
+        case 'e': return font_e;
+        case 'f': return font_f;
+        case 'g': return font_g;
+        case 'h': return font_h;
+        case 'i': return font_i;
+        case 'n': return font_n;
+        case 'o': return font_o;
+        case 'r': return font_r;
+        case 's': return font_s;
+        case 't': return font_t;
+        case ' ':
+        default:
+            return font_space;
+    }
+}
+
+void OLED_ShowSmallString(uint8_t X, uint8_t Page, const char *String)
+{
+    uint8_t i;
+    uint8_t j;
+    const uint8_t *font;
+
+    for(i = 0; String[i] != '\0'; i++)
+    {
+        if((uint16_t)X + 6u > 128u)
+        {
+            break;
+        }
+
+        font = OLED_GetSmallFont(String[i]);
+        OLED_SetCursor(Page, X);
+        for(j = 0; j < 5; j++)
+        {
+            OLED_WriteData(font[j]);
+        }
+        OLED_WriteData(0x00);
+        X += 6;
+    }
+}
+
 
 void OLED_ShowChar(uint8_t Line, uint8_t Column, char Char)
 {

@@ -1,7 +1,7 @@
 /*
  * OLED.h
  *
- *  Created on: 2026Äê5ÔÂ11ÈÕ
+ *  Created on: 2026å¹´5æœˆ11æ—¥
  *      Author: 16702
  */
 #ifndef __OLED_H
@@ -9,6 +9,9 @@
 
 void OLED_Init(void);
 void OLED_Clear(void);
+void OLED_ShowImage(uint8_t X, uint8_t Page, uint8_t Width, uint8_t Height, const uint8_t *Image);
+void OLED_DrawProgressBar(uint8_t X, uint8_t Page, uint8_t Width, uint8_t Percent);
+void OLED_ShowSmallString(uint8_t X, uint8_t Page, const char *String);
 void OLED_ShowChar(uint8_t Line, uint8_t Column, char Char);
 void OLED_ShowString(uint8_t Line, uint8_t Column, char *String);
 void OLED_ShowNum(uint8_t Line, uint8_t Column, uint32_t Number, uint8_t Length);

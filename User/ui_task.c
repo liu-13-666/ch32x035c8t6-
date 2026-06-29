@@ -21,6 +21,7 @@
  ******************************************************************************/
 
 #include "ui_task.h"
+#include "boot_logo.h"
 #include "OLED.h"
 #include "PDSink.h"
 #include "power_manager.h"
@@ -77,12 +78,20 @@ static uint16_t UI_AbsInt16(int16_t value)
 void UI_Task_Init(void)
 {
     OLED_Init();
-    OLED_ShowString(1, 1, "BOOT...");
+    OLED_ShowImage(44, 0, 40, 24, g_boot_chip_logo_40x24);
+    OLED_ShowSmallString(37, 3, "AI DESIGN");
+    OLED_ShowSmallString(25, 4, "Design for AI");
+    OLED_DrawProgressBar(16, 7, 96, 0);
+}
+
+void UI_Boot_SetProgress(uint8_t percent)
+{
+    OLED_DrawProgressBar(16, 7, 96, percent);
 }
 
 void UI_Task(void)
 {
-    static uint16_t refresh_cnt = 0;
+    static uint16_t refresh_cnt = 5;
     const power_info_t *info;
 
     refresh_cnt++;

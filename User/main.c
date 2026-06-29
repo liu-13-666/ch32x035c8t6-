@@ -15,6 +15,7 @@
 #include "debug.h"
 #include "AD.h"
 #include "INA219.h"
+#include "OLED.h"
 #include "PDSink.h"
 #include "board_power_port.h"
 #include "power_manager.h"
@@ -36,13 +37,23 @@ int main(void)
     printf("Power Bank Logic Demo\r\n");
 
     UI_Task_Init();              /* 尽早点亮 OLED，下载复位后能更快看到画面 */
+    UI_Boot_SetProgress(10);
     BSP_TIM1_Init();             /* 初始化 TIM1，为 ADC 周期采样提供节拍 */
+    UI_Boot_SetProgress(25);
     BSP_ADC_Initt();             /* 初始化 ADC：现在只采 PA5 NTC 温度 */
+    UI_Boot_SetProgress(40);
     SOC_Init();                  /* 初始化 SOC 库仑计模块 */
+    UI_Boot_SetProgress(55);
     INA219_Init();               /* 初始化两片 INA219：C口输入侧 + 电池到升压侧 */
+    UI_Boot_SetProgress(70);
     PDSink_Init();               /* 初始化 USB PD Sink 协议层 */
+    UI_Boot_SetProgress(85);
     Board_Power_Port_Init();     /* 初始化逻辑层和底层之间的板级适配接口 */
     Power_Manager_Init();        /* 初始化移动电源逻辑状态机 */
+    UI_Boot_SetProgress(100);
+    Delay_Ms(300);
+    OLED_Clear();
+    UI_Task();
 
     while(1)
     {
