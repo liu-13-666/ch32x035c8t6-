@@ -150,6 +150,53 @@ void OLED_ShowImage(uint8_t X, uint8_t Page, uint8_t Width, uint8_t Height, cons
     }
 }
 
+/*
+ * 启动页装饰边框。
+ * OLED 是按“页”写入的，这里只画屏幕边缘，避免覆盖中间的图标和文字。
+ */
+void OLED_DrawBootFrame(void)
+{
+    uint8_t i;
+
+    /* 顶部细线，左右各留一点空隙，四角更像一个窗口框。 */
+    OLED_SetCursor(0, 6);
+    for(i = 0; i < 116; i++)
+    {
+        OLED_WriteData(0x01);
+    }
+
+    /* 底部细线。进度条放在第 6 页，所以第 7 页可以完整画边框。 */
+    OLED_SetCursor(7, 6);
+    for(i = 0; i < 116; i++)
+    {
+        OLED_WriteData(0x80);
+    }
+
+    /* 左右边框，使用稀疏点线，装饰感更轻。 */
+    for(i = 1; i < 6; i++)
+    {
+        OLED_SetCursor(i, 2);
+        OLED_WriteData(0xAA);
+        OLED_SetCursor(i, 125);
+        OLED_WriteData(0xAA);
+    }
+
+    /* 四角加粗一点，下载后在小屏上更容易看出边框。 */
+    OLED_SetCursor(0, 1);
+    OLED_WriteData(0x1F);
+    OLED_WriteData(0x01);
+    OLED_SetCursor(0, 126);
+    OLED_WriteData(0x01);
+    OLED_WriteData(0x1F);
+
+    OLED_SetCursor(7, 1);
+    OLED_WriteData(0xF8);
+    OLED_WriteData(0x80);
+    OLED_SetCursor(7, 126);
+    OLED_WriteData(0x80);
+    OLED_WriteData(0xF8);
+}
+
 void OLED_DrawProgressBar(uint8_t X, uint8_t Page, uint8_t Width, uint8_t Percent)
 {
     uint8_t i;

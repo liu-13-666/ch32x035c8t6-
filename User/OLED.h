@@ -10,6 +10,7 @@
 void OLED_Init(void);
 void OLED_Clear(void);
 void OLED_ShowImage(uint8_t X, uint8_t Page, uint8_t Width, uint8_t Height, const uint8_t *Image);
+void OLED_DrawBootFrame(void);
 void OLED_DrawProgressBar(uint8_t X, uint8_t Page, uint8_t Width, uint8_t Percent);
 void OLED_ShowSmallString(uint8_t X, uint8_t Page, const char *String);
 void OLED_ShowChar(uint8_t Line, uint8_t Column, char Char);
