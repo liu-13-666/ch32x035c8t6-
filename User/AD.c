@@ -3,10 +3,10 @@
  *
  *  Created on: 2026年5月11日
  *      Author: 16702
- * Description: 单通道ADC采集 — 仅NTC热敏电阻温度
+ * Description: 双通道ADC采集
  *   - PA5 (ADC_CH5): NTC分压 → 温度 (°C)
- *   - TIM1_CH1 PWM 每50ms触发一次，DMA循环传输1个通道
- *   (电池电压/充电电流/输出电压/输出电流 已迁移至 INA219)
+ *   - PA6 (ADC_CH6): VBAT分压 → 电池电压 (mV)
+ *   - TIM1_CH1 PWM 每50ms触发一次，DMA循环传输2个通道
  */
 #include "ch32x035.h"
 
@@ -30,10 +30,12 @@ static float my_logf(float x)
 }
 
 /* ================================================================ */
-/*  单通道: 仅 PA5(CH5) NTC                                          */
-/*  缓冲索引 0 → ADC_CH5(PA5)                                        */
+/*  双通道: PA5(CH5) NTC + PA6(CH6) VBAT                              */
+/*  缓冲索引 0 → ADC_CH5(PA5), 缓冲索引 1 → ADC_CH6(PA6)              */
 /* ================================================================ */
-#define ADC_BUF_SIZE    1
+#define ADC_BUF_SIZE    2
+#define ADC_CH_NTC      0
+#define ADC_CH_VBAT     1
 volatile uint16_t ADC_Buf[ADC_BUF_SIZE];
 
 /*
@@ -46,6 +48,14 @@ volatile uint16_t ADC_Buf[ADC_BUF_SIZE];
 #define NTC_T25          298.15f     // 25°C对应的绝对温度 (K)
 #define ADC_VREF_mV      3300        // ADC参考电压 (mV)
 #define ADC_MAX          4095        // 12位ADC最大值
+
+/*
+ * VBAT_ADC 分压参数:
+ *   BAT_PACK+ -> 470k -> VBAT_ADC -> 220k -> GND
+ *   VBAT = ADC电压 * (470k + 220k) / 220k
+ */
+#define VBAT_R_UP_KOHM   470UL
+#define VBAT_R_DOWN_KOHM 220UL
 
 /* @brief  初始化TIM1，CH1输出PWM用于触发ADC，每50ms触发一次 */
 void BSP_TIM1_Init(void)
@@ -76,7 +86,7 @@ void BSP_TIM1_Init(void)
     TIM_Cmd(TIM1, ENABLE);
 }
 
-/* @brief  初始化ADC1 + DMA，单通道扫描采集 (仅PA5 NTC) */
+/* @brief  初始化ADC1 + DMA，双通道扫描采集 (PA5 NTC + PA6 VBAT) */
 void BSP_ADC_Initt(void)
 {
     ADC_InitTypeDef  ADC_InitStructure;
@@ -88,8 +98,8 @@ void BSP_ADC_Initt(void)
     RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA, ENABLE);
     RCC_AHBPeriphClockCmd(RCC_AHBPeriph_DMA1, ENABLE);
 
-    /* 2. 仅配置 PA5 为模拟输入: NTC 分压中点 */
-    GPIO_InitStructure.GPIO_Pin  = GPIO_Pin_5;
+    /* 2. 配置 PA5/PA6 为模拟输入: NTC_ADC + VBAT_ADC */
+    GPIO_InitStructure.GPIO_Pin  = GPIO_Pin_5 | GPIO_Pin_6;
     GPIO_InitStructure.GPIO_Mode = GPIO_Mode_AIN;
     GPIO_Init(GPIOA, &GPIO_InitStructure);
 
@@ -98,7 +108,7 @@ void BSP_ADC_Initt(void)
     DMA_InitStructure.DMA_PeripheralBaseAddr = (uint32_t)&ADC1->RDATAR;
     DMA_InitStructure.DMA_MemoryBaseAddr     = (uint32_t)ADC_Buf;
     DMA_InitStructure.DMA_DIR                = DMA_DIR_PeripheralSRC;
-    DMA_InitStructure.DMA_BufferSize         = ADC_BUF_SIZE;             /* 1 */
+    DMA_InitStructure.DMA_BufferSize         = ADC_BUF_SIZE;             /* 2 */
     DMA_InitStructure.DMA_PeripheralInc      = DMA_PeripheralInc_Disable;
     DMA_InitStructure.DMA_MemoryInc          = DMA_MemoryInc_Enable;
     DMA_InitStructure.DMA_PeripheralDataSize = DMA_PeripheralDataSize_HalfWord;
@@ -109,7 +119,7 @@ void BSP_ADC_Initt(void)
 
     DMA_Cmd(DMA1_Channel1, ENABLE);
 
-    /* 4. ADC配置: 独立模式, 扫描模式, TIM1_CH1硬件触发 (单通道) */
+    /* 4. ADC配置: 独立模式, 扫描模式, TIM1_CH1硬件触发 (双通道) */
     ADC_CLKConfig(ADC1, ADC_CLK_Div6);
     ADC_DeInit(ADC1);
     ADC_InitStructure.ADC_Mode               = ADC_Mode_Independent;
@@ -117,11 +127,16 @@ void BSP_ADC_Initt(void)
     ADC_InitStructure.ADC_ScanConvMode       = ENABLE;
     ADC_InitStructure.ADC_ExternalTrigConv   = ADC_ExternalTrigConv_T1_CC1;
     ADC_InitStructure.ADC_DataAlign          = ADC_DataAlign_Right;
-    ADC_InitStructure.ADC_NbrOfChannel       = 1;                       /* 单通道 */
+    ADC_InitStructure.ADC_NbrOfChannel       = ADC_BUF_SIZE;            /* 双通道 */
     ADC_Init(ADC1, &ADC_InitStructure);
 
-    /* 5. 配置单通道扫描顺序及采样时间: CH5(PA5) NTC → ADC_Buf[0] */
+    /*
+     * 5. 配置扫描顺序及采样时间。
+     * VBAT_ADC 是 470k/220k 高阻分压。
+     * CH32X035库最长采样枚举是 11Cycles，因此用最长采样时间并在读取时做滤波。
+     */
     ADC_RegularChannelConfig(ADC1, ADC_Channel_5, 1, ADC_SampleTime_11Cycles);
+    ADC_RegularChannelConfig(ADC1, ADC_Channel_6, 2, ADC_SampleTime_11Cycles);
 
     /* 6. 启动ADC + DMA + 外部触发 */
     ADC_DMACmd(ADC1, ENABLE);
@@ -145,7 +160,7 @@ void BSP_ADC_Initt(void)
  */
 int16_t BSP_GetNTC_TempC(void)
 {
-    uint16_t adc_val = ADC_Buf[0];
+    uint16_t adc_val = ADC_Buf[ADC_CH_NTC];
 
     if (adc_val == 0) {
         return -40;
@@ -162,8 +177,35 @@ int16_t BSP_GetNTC_TempC(void)
     return (int16_t)temp_c;
 }
 
+/* @brief  获取电池电压 (mV)
+ *         VBAT_ADC = BAT_PACK+ 经 470k/220k 分压后的电压。
+ *         这里做一阶滤波，避免单次ADC毛刺导致SOC和低压保护跳动。
+ */
+uint16_t BSP_GetVBAT_mV(void)
+{
+    static uint16_t filtered_mv = 0;
+    uint32_t adc_val;
+    uint32_t adc_mv;
+    uint32_t bat_mv;
+
+    adc_val = ADC_Buf[ADC_CH_VBAT];
+    adc_mv = adc_val * ADC_VREF_mV / ADC_MAX;
+    bat_mv = adc_mv * (VBAT_R_UP_KOHM + VBAT_R_DOWN_KOHM) / VBAT_R_DOWN_KOHM;
+
+    if(filtered_mv == 0)
+    {
+        filtered_mv = (uint16_t)bat_mv;
+    }
+    else
+    {
+        filtered_mv = (uint16_t)(((uint32_t)filtered_mv * 7U + bat_mv) / 8U);
+    }
+
+    return filtered_mv;
+}
+
 /* @brief  获取ADC原始值
- * @param  ch: 0 = NTC(PA5)
+ * @param  ch: 0 = NTC(PA5), 1 = VBAT(PA6)
  */
 uint16_t BSP_GetADC_Value(uint8_t ch)
 {

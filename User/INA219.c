@@ -9,13 +9,15 @@
  *   0x00 Config       — 配置 (BRNG=16V, PG=±320mV, 12-bit, 连续模式)
  *   0x01 ShuntVoltage — 分流电压 (有符号 16 位, LSB=10µV)
  *   0x02 BusVoltage   — 总线电压 (bit15-3=电压×4mV, bit2-0=状态)
- *   0x05 Calibration  — 校准值 (0.1Ω 采样 → 4096)
+ *   0x05 Calibration  — 校准值
  *
- * 校准计算 (0.1Ω 采样电阻, ±3.2A 量程):
- *   Current_LSB = 0.1 mA
- *   Cal = 0.04096 / (Current_LSB × Rshunt) = 0.04096 / (0.0001 × 0.1) = 4096
- *   分流电压(mV) = 原始值 × 0.01
- *   电流(mA) = 分流电压(mV) / 0.1Ω = 原始值 / 10
+ * 新原理图:
+ *   INA219 #1 / 0x40: C口输入检测, R5  = 50mΩ
+ *   INA219 #2 / 0x41: A口输出检测, R16 = 20mΩ
+ *
+ * 本驱动直接用 ShuntVoltage 寄存器换算电流:
+ *   ShuntVoltage LSB = 10uV
+ *   I(mA) = raw * 10 / R(mΩ)
  */
 #include "INA219.h"
 
@@ -29,7 +31,8 @@
 
 /* ─── 配置常量 ─── */
 #define INA219_CONFIG_VAL       0x0CCF  /* BRNG=16V, PG=±320mV, BADC/SADC=12bit, 连续 */
-#define INA219_CAL_VAL          4096    /* 0.1Ω 采样电阻, 0.1mA LSB */
+#define INA219_CAL_INPUT_VAL    8192    /* U1/R5  = 50mΩ, 0.1mA LSB */
+#define INA219_CAL_OUTPUT_VAL   20480   /* U3/R16 = 20mΩ, 0.1mA LSB */
 
 /* ================================================================ */
 /*  将 7 位 I2C 地址转换为 8 位发送地址 (左移 1 位)                    */
@@ -76,6 +79,26 @@ static uint8_t INA219_WaitEvent(uint32_t event)
 static void INA219_I2C_StopOnError(void)
 {
     I2C_GenerateSTOP(I2C1, ENABLE);
+}
+
+static uint16_t INA219_GetCalibration(uint8_t addr7)
+{
+    if(addr7 == INA219_ADDR_OUTPUT)
+    {
+        return INA219_CAL_OUTPUT_VAL;
+    }
+
+    return INA219_CAL_INPUT_VAL;
+}
+
+static uint16_t INA219_GetShuntMilliOhm(uint8_t addr7)
+{
+    if(addr7 == INA219_ADDR_OUTPUT)
+    {
+        return INA219_RSHUNT_OUTPUT_MOHM;
+    }
+
+    return INA219_RSHUNT_INPUT_MOHM;
 }
 
 /* ================================================================ */
@@ -207,7 +230,7 @@ static void INA219_ConfigOne(uint8_t addr7)
 {
     INA219_WriteReg(addr7, INA219_REG_CONFIG, INA219_CONFIG_VAL);
     Delay_Us(50);                          /* INA219 要求 Config 后至少 40µs */
-    INA219_WriteReg(addr7, INA219_REG_CALIBRATION, INA219_CAL_VAL);
+    INA219_WriteReg(addr7, INA219_REG_CALIBRATION, INA219_GetCalibration(addr7));
 }
 
 /* ================================================================ */
@@ -246,8 +269,8 @@ void INA219_Init(void)
 {
     INA219_I2C_Init();
 
-    INA219_ConfigOne(INA219_ADDR_CHARGE);      /* 配置 #1 充电侧: 0x40 */
-    INA219_ConfigOne(INA219_ADDR_DISCHARGE);   /* 配置 #2 放电侧: 0x41 */
+    INA219_ConfigOne(INA219_ADDR_INPUT);       /* 配置 #1 C口输入侧: 0x40 */
+    INA219_ConfigOne(INA219_ADDR_OUTPUT);      /* 配置 #2 A口输出侧: 0x41 */
 }
 
 /* ================================================================ */
@@ -266,45 +289,65 @@ uint16_t INA219_GetBusVoltage_mV(uint8_t addr)
 /*  读取电流 (mA)                                                      */
 /*  ShuntVoltage 寄存器: 有符号 16 位, LSB = 10µV                       */
 /*  电流 = 分流电压 / 采样电阻                                         */
-/*       = (raw × 10µV) / 0.1Ω                                        */
-/*       = (raw × 0.01mV) / 0.1Ω                                      */
-/*       = raw / 10  (mA)                                             */
+/*       = raw × 10 / R(mΩ)                                           */
 /*                                                                   */
-/*  INA219 #1 充电侧: 充电电流流入 → 返回正值                          */
-/*  INA219 #2 放电侧: 放电电流流出 → 返回***正***值 (方便使用)               */
+/*  INA219 #1 C口输入侧: 输入电流方向为正。                              */
+/*  INA219 #2 A口输出侧: 输出电流方向为正。                              */
 /* ================================================================ */
 int32_t INA219_GetCurrent_mA(uint8_t addr)
 {
     int16_t raw;
+    uint16_t shunt_mohm;
 
     /* 读分流电压寄存器 (有符号) */
     raw = (int16_t)INA219_ReadReg(addr, INA219_REG_SHUNT_VOLT);
+    shunt_mohm = INA219_GetShuntMilliOhm(addr);
 
-    return (int32_t)raw / 10;
+    return ((int32_t)raw * 10) / shunt_mohm;
 }
 
 /* ================================================================ */
-/*  便捷函数: 充电侧 (INA219 #1, 地址 0x40)                             */
+/*  便捷函数: C口输入侧 (INA219 #1, 地址 0x40)                           */
 /* ================================================================ */
+uint16_t INA219_GetInputVoltage_mV(void)
+{
+    return INA219_GetBusVoltage_mV(INA219_ADDR_INPUT);
+}
+
+int32_t INA219_GetInputCurrent_mA(void)
+{
+    return INA219_GetCurrent_mA(INA219_ADDR_INPUT);
+}
+
+/* ================================================================ */
+/*  便捷函数: A口输出侧 (INA219 #2, 地址 0x41)                           */
+/* ================================================================ */
+uint16_t INA219_GetOutputVoltage_mV(void)
+{
+    return INA219_GetBusVoltage_mV(INA219_ADDR_OUTPUT);
+}
+
+int32_t INA219_GetOutputCurrent_mA(void)
+{
+    return INA219_GetCurrent_mA(INA219_ADDR_OUTPUT);
+}
+
 uint16_t INA219_GetVIN_mV(void)
 {
-    return INA219_GetBusVoltage_mV(INA219_ADDR_CHARGE);
+    return INA219_GetInputVoltage_mV();
 }
 
 int32_t INA219_GetChargeCurrent_mA(void)
 {
-    return INA219_GetCurrent_mA(INA219_ADDR_CHARGE);
+    return INA219_GetInputCurrent_mA();
 }
 
-/* ================================================================ */
-/*  便捷函数: 放电侧 (INA219 #2, 地址 0x41)                             */
-/* ================================================================ */
 uint16_t INA219_GetVBAT_mV(void)
 {
-    return INA219_GetBusVoltage_mV(INA219_ADDR_DISCHARGE);
+    return INA219_GetOutputVoltage_mV();
 }
 
 int32_t INA219_GetDischargeCurrent_mA(void)
 {
-    return INA219_GetCurrent_mA(INA219_ADDR_DISCHARGE);
+    return INA219_GetOutputCurrent_mA();
 }

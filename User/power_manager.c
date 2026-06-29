@@ -28,7 +28,7 @@ static uint8_t Power_Manager_CalcFaultFlags(const power_info_t *info)
 {
     uint8_t flags = POWER_FAULT_NONE;
 
-    /* 计算故障标志：低压、过压、输出过流、温度异常。 */
+    /* 计算故障标志：低压、过压、A口输出过流、温度异常。 */
     if(info->bat_mv < BAT_LOW_MV)
     {
         flags |= POWER_FAULT_BAT_LOW;

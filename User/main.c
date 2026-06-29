@@ -44,7 +44,7 @@ int main(void)
     UI_Boot_SetProgress(40);
     SOC_Init();                  /* 初始化 SOC 库仑计模块 */
     UI_Boot_SetProgress(55);
-    INA219_Init();               /* 初始化两片 INA219：C口输入侧 + 电池到升压侧 */
+    INA219_Init();               /* 初始化两片 INA219：C口输入侧 + A口输出侧 */
     UI_Boot_SetProgress(70);
     PDSink_Init();               /* 初始化 USB PD Sink 协议层 */
     UI_Boot_SetProgress(85);

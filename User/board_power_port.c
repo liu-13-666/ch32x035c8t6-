@@ -4,9 +4,9 @@
  * 逻辑层和底层驱动之间的适配层。
  *
  * 当前硬件采样分工：
- * 1. INA219 #1：C口输入 -> 降压/充电模块之间，测输入电压和充电侧电流。
- * 2. INA219 #2：电池 -> 升压模块之间，测电池电压和放电侧电流。
- * 3. AD：现在只保留 PA5 NTC 温度采样。
+ * 1. INA219 #1：C口输入 -> 降压/充电模块之间，测输入电压和输入电流。
+ * 2. INA219 #2：A口限流后 -> USB-A 口之间，测A口真实输出电压和输出电流。
+ * 3. AD：PA5 NTC_ADC 测温度，PA6 VBAT_ADC 测电池电压。
  *
  * 这样 power_manager.c 不直接关心 INA219/AD/PD 的底层细节。
  ******************************************************************************/
@@ -17,6 +17,9 @@
 #include "PDSink.h"
 #include "power_manager.h"
 
+#define EST_CHARGE_EFFICIENCY_PERCENT  90
+#define EST_BOOST_EFFICIENCY_PERCENT   85
+
 void Board_Power_Port_Init(void)
 {
     /*
@@ -25,51 +28,79 @@ void Board_Power_Port_Init(void)
      * 需要确认的内容：
      * 1. 充电使能 CHG_EN：接哪个 GPIO，什么电平表示允许充电。
      * 2. 输出使能 OUT_EN / BOOST_EN / MOS_EN：接哪个 GPIO，什么电平打开 A口 5V 输出。
-     * 3. 负载检测：当前先用“电池到升压侧放电电流”判断，后续可换成真实 A口检测。
+     * 3. 负载检测：当前用 A口输出电流判断。
      */
 }
 
 uint16_t bsp_get_input_voltage_mv(void)
 {
     /* C口输入电压，来自 INA219 #1。 */
-    return INA219_GetVIN_mV();
+    return INA219_GetInputVoltage_mV();
 }
 
 int16_t bsp_get_charge_current_ma(void)
 {
     /* C口到降压/充电模块之间的电流，来自 INA219 #1。 */
-    return (int16_t)INA219_GetChargeCurrent_mA();
+    return (int16_t)INA219_GetInputCurrent_mA();
 }
 
 uint16_t bsp_get_bat_voltage_mv(void)
 {
-    /* 电池电压，来自 INA219 #2 的总线电压。 */
-    return INA219_GetVBAT_mV();
+    /* 电池电压，来自 PA6/VBAT_ADC 分压。 */
+    return BSP_GetVBAT_mV();
 }
 
 int16_t bsp_get_bat_current_ma(void)
 {
-    int16_t charge_ma;
-    int16_t discharge_ma;
+    uint32_t bat_mv;
+    uint32_t input_mv;
+    int32_t input_ma;
+    uint32_t out_mv;
+    int32_t out_ma;
+    int32_t est_ma;
 
     /*
      * 逻辑层统一约定：
      *   正数 = 电池正在充电
      *   负数 = 电池正在放电
      *
-     * 由于两颗 INA219 分别测充电侧和放电侧，这里根据当前状态合成一个电池净电流。
-     * 第一版充放电互斥，所以优先使用明显大于检测阈值的一侧。
+     * 新硬件没有直接测电池主回路电流。
+     * 这里用输入/输出功率估算电池净电流，给 SOC 软件库仑计使用：
+     *   充电估算：Ibat = Vin * Iin * 充电效率 / Vbat
+     *   放电估算：Ibat = -(Vout * Iout / 升压效率) / Vbat
+     *
+     * 第一版状态机充放电互斥，所以优先使用A口输出电流判断放电。
      */
-    charge_ma = bsp_get_charge_current_ma();
-    discharge_ma = (int16_t)bsp_get_discharge_current_ma();
-
-    if(discharge_ma >= LOAD_DETECT_MA)
+    bat_mv = bsp_get_bat_voltage_mv();
+    if(bat_mv < 2500U)
     {
-        return -discharge_ma;
+        return 0;
     }
-    if(charge_ma > 0)
+
+    out_mv = bsp_get_bus_voltage_mv();
+    out_ma = (int32_t)bsp_get_bus_current_ma();
+    if(out_ma >= LOAD_DETECT_MA)
     {
-        return charge_ma;
+        est_ma = (int32_t)(((uint64_t)out_mv * (uint32_t)out_ma * 100U) /
+                 ((uint64_t)EST_BOOST_EFFICIENCY_PERCENT * bat_mv));
+        if(est_ma > 32767)
+        {
+            est_ma = 32767;
+        }
+        return (int16_t)(-est_ma);
+    }
+
+    input_mv = bsp_get_input_voltage_mv();
+    input_ma = bsp_get_charge_current_ma();
+    if(input_ma > 0)
+    {
+        est_ma = (int32_t)(((uint64_t)input_mv * (uint32_t)input_ma *
+                 EST_CHARGE_EFFICIENCY_PERCENT) / ((uint64_t)100U * bat_mv));
+        if(est_ma > 32767)
+        {
+            est_ma = 32767;
+        }
+        return (int16_t)est_ma;
     }
 
     return 0;
@@ -77,19 +108,16 @@ int16_t bsp_get_bat_current_ma(void)
 
 uint16_t bsp_get_bus_voltage_mv(void)
 {
-    /*
-     * 当前没有 A口输出电压 INA219/ADC。
-     * 放电时先按目标 5V 给 OLED/逻辑层显示；真正 A口电压建议后续再加采样。
-     */
-    return OUT_TARGET_MV;
+    /* A口真实输出电压，来自 INA219 #2。 */
+    return INA219_GetOutputVoltage_mV();
 }
 
 uint16_t bsp_get_discharge_current_ma(void)
 {
     int32_t ma;
 
-    /* 电池到升压模块之间的放电电流，来自 INA219 #2。 */
-    ma = INA219_GetDischargeCurrent_mA();
+    /* A口真实输出电流，来自 INA219 #2。 */
+    ma = INA219_GetOutputCurrent_mA();
     if(ma < 0)
     {
         ma = -ma;
@@ -101,8 +129,7 @@ uint16_t bsp_get_discharge_current_ma(void)
 uint16_t bsp_get_bus_current_ma(void)
 {
     /*
-     * 注意：这里现在不是 A口 5V 输出电流，而是电池到升压侧电流。
-     * 因为 INA219 #2 放在“电池 -> 升压模块”之间。
+     * 当前 bus_ma 表示 A口真实输出电流。
      */
     return bsp_get_discharge_current_ma();
 }
@@ -125,9 +152,8 @@ uint8_t bsp_is_input_attached(void)
 uint8_t bsp_is_load_attached(void)
 {
     /*
-     * 第一版负载检测：
-     * 由于没有 A口输出电流采样，暂时用“电池到升压侧电流”判断是否在放电。
-     * 如果输出未打开，这个电流也可能为 0，后续最好加按键开输出或 A口检测。
+     * 负载检测：用 A口输出电流判断。
+     * 如果输出未打开，电流仍然可能为 0，后续仍建议配合按键或输出使能策略。
      */
     return (bsp_get_discharge_current_ma() >= LOAD_DETECT_MA);
 }

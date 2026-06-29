@@ -25,12 +25,12 @@
 
 /*
  * 输出目标：A口 5V/2A。
- * 现在第二颗 INA219 放在“电池 -> 升压”之间，测到的是升压输入侧放电电流，
- * 不是 A口 5V 输出电流。5V/2A 输出时，电池侧电流可能接近 3A。
+ * 第二颗 INA219 已改到 A口输出侧，过流阈值按真实 A口输出电流判断。
  */
 #define OUT_TARGET_MV      5000
 #define OUT_TARGET_MA      2000
-#define DISCHARGE_OVER_CURRENT  3200
+#define OUT_OVER_CURRENT_MA     2200
+#define DISCHARGE_OVER_CURRENT  OUT_OVER_CURRENT_MA  /* 兼容旧命名 */
 #define LOAD_DETECT_MA     50
 
 /* PROTECT 状态下故障连续消失多少次后才允许恢复，Power_Manager_Task 约 100ms 调一次。 */
@@ -41,7 +41,7 @@
  * F00：无故障
  * F01：电池低压
  * F02：电池过压
- * F04：放电/升压输入侧过流
+ * F04：A口输出过流
  * F08：温度异常
  */
 #define POWER_FAULT_NONE      0x00
@@ -53,11 +53,11 @@
 typedef struct
 {
     uint16_t input_mv;         /* C口输入电压，来自 INA219 #1，单位 mV */
-    int16_t charge_ma;         /* C口到降压/充电侧电流，来自 INA219 #1，单位 mA */
-    uint16_t bat_mv;           /* 电池电压，来自 INA219 #2，单位 mV */
-    int16_t bat_ma;            /* 电池净电流，充电为正、放电为负，单位 mA */
-    uint16_t bus_mv;           /* 当前无 A口电压采样，放电时按目标 5000mV 显示 */
-    uint16_t bus_ma;           /* 电池到升压侧放电电流，来自 INA219 #2，单位 mA */
+    int16_t charge_ma;         /* C口输入电流，来自 INA219 #1，单位 mA */
+    uint16_t bat_mv;           /* 电池电压，来自 PA6/VBAT_ADC，单位 mV */
+    int16_t bat_ma;            /* 电池净电流估算值，充电为正、放电为负，单位 mA */
+    uint16_t bus_mv;           /* A口真实输出电压，来自 INA219 #2，单位 mV */
+    uint16_t bus_ma;           /* A口真实输出电流，来自 INA219 #2，单位 mA */
     int16_t temp_c;            /* 电池温度，单位摄氏度；没有 NTC 时仅作显示参考 */
 
     uint8_t input_attached;    /* 是否检测到 Type-C/PD 输入 */
