@@ -32,13 +32,13 @@ static PD_CONTROL PD_Ctl;
 /*
  * PD 输入协商参数。
  * PD_INPUT_TARGET_MA 用来筛选适配器 PDO 是否至少支持 2A。
- * PD_REQUEST_CURRENT_MA 是 Request 里实际申请的工作电流，目前先保守写 500mA，
- * 方便先把协议流程跑通；确认硬件输入路径能力后可以再提高。
+ * PD_REQUEST_CURRENT_MA 是 Request 里实际申请的工作电流，按作品 2A 输入能力申请 2000mA；
+ * 若实测协商不稳定，可临时调低再排查。
  */
 #define PD_INPUT_PRIMARY_MV    9000
 #define PD_INPUT_FALLBACK_MV   5000
 #define PD_INPUT_TARGET_MA     2000
-#define PD_REQUEST_CURRENT_MA  500
+#define PD_REQUEST_CURRENT_MA  2000
 #define PD_VOLTAGE_TOLERANCE   250
 /* 1：优先申请 9V/2A；0：只申请 5V/2A，调试不稳定时可以先改成 0。 */
 #define PD_TRY_9V_INPUT        1

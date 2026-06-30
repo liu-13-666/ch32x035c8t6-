@@ -10,18 +10,20 @@
 
 /*
  * 电池保护阈值，单位 mV / 摄氏度。
- * 这里先按单节锂电池估算：低压 3.3V、满电约 4.18V、过压 4.2V。
+ * 这里先按单节锂电池估算：低压 3.3V、满电约 4.18V。
+ * 过压阈值留出余量到 4.3V：TP5100 自治充电会把电池稳在 4.2V，
+ * 若过压阈值压到 4.2V，满充时 ADC 噪声会反复误触发过压保护。
  * 如果后面硬件是多串电池，必须按串数重新修改这些阈值。
  */
 #define BAT_LOW_MV        3300
-#define BAT_OVER_MV       4200
+#define BAT_OVER_MV       4300
 #define BAT_FULL_MV       4180
 #define BAT_RECOVER_MV    3400
 #define BAT_TEMP_LOW_C    0
 #define BAT_TEMP_HIGH_C   60
 
-/* 确认 PA5 确实接了 NTC 温敏电阻后，再改成 1 打开温度保护。 */
-#define POWER_ENABLE_TEMP_PROTECT  0
+/* PA5 已确认接了 10k NTC（R11 上拉 + NTC1 下拉），打开温度保护。 */
+#define POWER_ENABLE_TEMP_PROTECT  1
 
 /*
  * 输出目标：A口 5V/2A。

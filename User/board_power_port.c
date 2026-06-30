@@ -20,16 +20,31 @@
 #define EST_CHARGE_EFFICIENCY_PERCENT  90
 #define EST_BOOST_EFFICIENCY_PERCENT   85
 
+/*
+ * A 口输出使能引脚：USB_A_EN -> PB11。
+ * 驱动 SY6280(U5) 限流负载开关的 EN 脚，高电平打开 A口 5V 输出。
+ * 这是整机唯一软件可控的功率开关：充电由 TP5100 自治，无法关断。
+ */
+#define OUT_EN_GPIO_PORT   GPIOB
+#define OUT_EN_GPIO_PIN    GPIO_Pin_11
+
 void Board_Power_Port_Init(void)
 {
+    GPIO_InitTypeDef GPIO_InitStructure = {0};
+
     /*
-     * TODO：等待底层同学确认后，在这里初始化控制引脚。
-     *
-     * 需要确认的内容：
-     * 1. 充电使能 CHG_EN：接哪个 GPIO，什么电平表示允许充电。
-     * 2. 输出使能 OUT_EN / BOOST_EN / MOS_EN：接哪个 GPIO，什么电平打开 A口 5V 输出。
-     * 3. 负载检测：当前用 A口输出电流判断。
+     * 初始化 A口输出使能 PB11：推挽输出，上电默认拉低（不带输出）。
+     * 充电使能没有对应硬件：TP5100 是独立充电 IC，没有引到主控的 EN 脚，
+     * 只要 C 口有输入就自动充电，所以这里不需要初始化任何充电控制脚。
      */
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOB, ENABLE);
+
+    GPIO_InitStructure.GPIO_Pin   = OUT_EN_GPIO_PIN;
+    GPIO_InitStructure.GPIO_Mode  = GPIO_Mode_Out_PP;
+    GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
+    GPIO_Init(OUT_EN_GPIO_PORT, &GPIO_InitStructure);
+
+    GPIO_ResetBits(OUT_EN_GPIO_PORT, OUT_EN_GPIO_PIN);
 }
 
 uint16_t bsp_get_input_voltage_mv(void)
@@ -166,34 +181,32 @@ uint8_t bsp_is_pd_ready(void)
 
 void bsp_output_enable(void)
 {
-    /*
-     * TODO：打开 A口 5V 输出。
-     * 等底层确认 OUT_EN / BOOST_EN / MOS_EN 后，在这里写 GPIO_SetBits
-     * 或调用升压芯片使能函数。
-     */
+    /* 打开 A口 5V 输出：拉高 USB_A_EN(PB11)，SY6280 导通。 */
+    GPIO_SetBits(OUT_EN_GPIO_PORT, OUT_EN_GPIO_PIN);
 }
 
 void bsp_output_disable(void)
 {
     /*
-     * TODO：关闭 A口 5V 输出。
-     * 保护状态、空闲状态、充电状态都会调用这里，默认要保证输出路径关闭。
+     * 关闭 A口 5V 输出：拉低 USB_A_EN(PB11)，SY6280 断开。
+     * 保护、空闲、充电状态都会调用这里，是故障时唯一能真正切断的功率路径。
      */
+    GPIO_ResetBits(OUT_EN_GPIO_PORT, OUT_EN_GPIO_PIN);
 }
 
 void bsp_charge_enable(void)
 {
     /*
-     * TODO：打开充电路径。
-     * 如果是 GPIO 控制充电芯片，就在这里拉对应使能脚；
-     * 如果是 I2C 控制充电芯片，就在这里调用底层 I2C 配置函数。
+     * 充电由 TP5100 自治，没有引到主控的使能脚，软件无法打开/关闭充电。
+     * 这里保留为空仅为接口完整：只要 C 口有输入，TP5100 就会自动充电。
      */
 }
 
 void bsp_charge_disable(void)
 {
     /*
-     * TODO：关闭充电路径。
-     * 保护状态和放电状态都会调用这里，默认要保证充电路径关闭。
+     * 同上：TP5100 不可由软件关断。
+     * 注意：因此“保护时停充”在硬件上无法执行，故障时只能靠 bsp_output_disable()
+     * 切断 A口输出，无法切断充电。多串/可控充电方案需另加 MOSFET 或带 EN 的充电 IC。
      */
 }
